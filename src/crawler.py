@@ -1,6 +1,7 @@
 import asyncio
 import re
 import time
+import traceback # <--- ADD THIS IMPORT
 from urllib.parse import urlparse
 from loguru import logger
 from bs4 import BeautifulSoup
@@ -55,13 +56,15 @@ async def get_page_content(url, session: aiohttp.ClientSession):
     except asyncio.TimeoutError:
         logger.error(f"Timeout while fetching {url}")
     except aiohttp.ClientError as e:
-        # --- MODIFIED BLOCK ---
-        # Added exc_info=True to print the full traceback for detailed debugging.
-        logger.error(f"HTTP request failed for {url} with a client error", exc_info=True)
-        # --- END MODIFIED BLOCK ---
+        # --- NEW GUARANTEED LOGGING ---
+        # Manually format the traceback to ensure it's always printed.
+        tb_str = traceback.format_exc()
+        logger.error(f"HTTP ClientError for {url}. Exception: {e}\nTraceback:\n{tb_str}")
+        # --- END NEW BLOCK ---
         raise
     except Exception as e:
-        logger.error(f"An unexpected error occurred in get_page_content for {url}", exc_info=True)
+        tb_str = traceback.format_exc()
+        logger.error(f"An unexpected error occurred in get_page_content for {url}. Exception: {e}\nTraceback:\n{tb_str}")
         raise
 
 async def crawl_forum_page(page_num: int, session: aiohttp.ClientSession, url_queue: asyncio.Queue):
@@ -110,8 +113,9 @@ async def worker(name: str, url_queue: asyncio.Queue, session: aiohttp.ClientSes
             url = await url_queue.get()
             logger.debug(f"Worker {name} processing {url}")
             await process_thread(url, session)
-        except Exception as e:
-            logger.error(f"Worker {name} caught an exception", exc_info=True)
+        except Exception: # Catch all exceptions
+            tb_str = traceback.format_exc()
+            logger.error(f"Worker {name} caught an unhandled exception.\nTraceback:\n{tb_str}")
         finally:
             url_queue.task_done()
             
