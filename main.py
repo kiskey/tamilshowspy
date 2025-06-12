@@ -14,7 +14,6 @@ from src.utils import fetch_trackers
 
 # --- Globals ---
 url_queue = asyncio.Queue()
-http_session = None
 
 # --- Logger Setup ---
 logger.remove()
@@ -31,27 +30,30 @@ async def setup_nltk():
         nltk.data.find('stem/porter_stemmer.zip')
     except LookupError:
         logger.info("Downloading NLTK porter_stemmer...")
-        nltk.download('porter_stemmer', quiet=True)
-        logger.info("NLTK porter_stemmer downloaded.")
+        try:
+            nltk.download('porter_stemmer', quiet=True)
+            logger.info("NLTK porter_stemmer downloaded.")
+        except Exception as e:
+            logger.error(f"Failed to download NLTK data: {e}. Stemming will not work.")
 
-async def scheduler_task():
+async def scheduler_task(session: aiohttp.ClientSession):
     """A simple async scheduler loop."""
     logger.info("Scheduler started.")
     # Initial tasks on startup
-    await update_trackers_task()
-    await run_crawler(initial_run=True)
+    await update_trackers_task(session)
+    await run_crawler(session, initial_run=True)
     
     while True:
         logger.info(f"Scheduler sleeping for {settings.CRAWL_INTERVAL} seconds.")
         await asyncio.sleep(settings.CRAWL_INTERVAL)
         
         # Scheduled tasks
-        await update_trackers_task()
-        await run_crawler()
+        await update_trackers_task(session)
+        await run_crawler(session)
         
-async def update_trackers_task():
+async def update_trackers_task(session: aiohttp.ClientSession):
     logger.info("Running scheduled task: update trackers.")
-    trackers = await fetch_trackers()
+    trackers = await fetch_trackers(session)
     if trackers:
         pipe = redis_client.pipeline()
         pipe.delete("trackers:latest")
@@ -61,13 +63,11 @@ async def update_trackers_task():
     else:
         logger.warning("Tracker update failed, keeping old list.")
 
-async def start_background_tasks(app):
+async def start_background_tasks(app: web.Application):
     """aiohttp startup signal handler."""
-    global http_session
-    
     logger.info("Application starting up...")
     
-    # Initialize shared aiohttp client session
+    # Initialize shared aiohttp client session and store it in the app object
     connector = aiohttp.TCPConnector(limit_per_host=settings.MAX_CONCURRENCY)
     http_session = aiohttp.ClientSession(connector=connector)
     app['http_session'] = http_session
@@ -78,17 +78,17 @@ async def start_background_tasks(app):
 
     await setup_nltk()
 
-    # Create worker pool
+    # Create worker pool, passing the session to each worker
     app['workers'] = [
-        asyncio.create_task(worker(f"worker-{i}", url_queue, http_session))
+        asyncio.create_task(worker(f"worker-{i}", url_queue, app['http_session']))
         for i in range(settings.MAX_CONCURRENCY)
     ]
     
-    # Start the scheduler
-    app['scheduler'] = asyncio.create_task(scheduler_task())
+    # Start the scheduler, passing the session
+    app['scheduler'] = asyncio.create_task(scheduler_task(app['http_session']))
     logger.info("Background tasks and workers started.")
 
-async def cleanup_background_tasks(app):
+async def cleanup_background_tasks(app: web.Application):
     """aiohttp cleanup signal handler."""
     logger.info("Application shutting down...")
     
@@ -103,7 +103,9 @@ async def cleanup_background_tasks(app):
     await asyncio.gather(app['scheduler'], *app['workers'], return_exceptions=True)
     
     # Close Redis pool
-    await RedisClient.get_pool().disconnect()
+    pool = RedisClient.get_pool()
+    if pool:
+        await pool.disconnect()
     logger.info("Cleanup complete.")
 
 def main():
