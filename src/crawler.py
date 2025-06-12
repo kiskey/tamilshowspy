@@ -1,6 +1,7 @@
 import asyncio
 import re
 import time
+from urllib.parse import urlparse
 from loguru import logger
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -11,17 +12,49 @@ from .redis_client import redis_client
 from .utils import get_user_agent
 from .parser import process_thread
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def _get_request_headers(url: str) -> dict:
+    """
+    Builds a dictionary of headers to mimic a real browser request.
+    This is crucial for avoiding 403 Forbidden errors from anti-bot systems.
+    """
+    # Use the base domain of the forum as a plausible Referer.
+    parsed_uri = urlparse(settings.FORUM_URL)
+    referer = f"{parsed_uri.scheme}://{parsed_uri.netloc}/"
+
+    headers = {
+        "User-Agent": get_user_agent(),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": referer,
+        "DNT": "1", # Do Not Track
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-User": "?1",
+        "Sec-Ch-Ua": '"Not/A)Brand";v="99", "Google Chrome";v="115", "Chromium";v="115"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+    }
+    return headers
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=4, max=30))
 async def get_page_content(url, session: aiohttp.ClientSession):
-    headers = {"User-Agent": get_user_agent()}
+    # Get a full set of realistic browser headers for the request.
+    headers = _get_request_headers(url)
+
     await asyncio.sleep(settings.REQUEST_THROTTLE_MS / 1000)
     try:
         async with session.get(url, headers=headers, timeout=30) as response:
             if response.status == 404:
                 logger.warning(f"Page not found (404): {url}")
                 return None
-            response.raise_for_status()
+            
+            # This will now raise an exception for 403, triggering the tenacity retry.
+            response.raise_for_status() 
             return await response.text()
+            
     except asyncio.TimeoutError:
         logger.error(f"Timeout while fetching {url}")
     except aiohttp.ClientError as e:
