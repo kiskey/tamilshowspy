@@ -22,11 +22,11 @@ COPY requirements.txt .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- NEW BLOCK: PRE-DOWNLOAD NLTK DATA ---
-# This command runs once during the image build process.
-# It downloads the 'porter_stemmer' data into the image itself.
-RUN python -m nltk.downloader porter_stemmer
-# --- END NEW BLOCK ---
+# --- CORRECTED BLOCK: PRE-DOWNLOAD NLTK DATA ---
+# This command runs a non-interactive python scriptlet to download the data.
+# It is more robust for Docker builds than using the downloader module directly.
+RUN python -c "import nltk; nltk.download('porter_stemmer')"
+# --- END CORRECTED BLOCK ---
 
 # Copy the application code into the container
 COPY ./src ./src
