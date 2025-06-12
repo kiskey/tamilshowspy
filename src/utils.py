@@ -15,7 +15,6 @@ stemmer = PorterStemmer()
 LANG_MAP = {
     "tam": "ta", "tel": "te", "hin": "hi", "eng": "en", "mal": "ml",
     "kan": "kn", "kor": "ko", "jap": "ja", "chi": "zh",
-    # Add more mappings as needed
 }
 
 USER_AGENTS = [
@@ -68,19 +67,24 @@ def parse_magnet(magnet_uri: str) -> Optional[Dict]:
     return {"btih": btih, "title": title.replace('+', ' ')}
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-async def fetch_trackers() -> list[str]:
+async def fetch_trackers(session: aiohttp.ClientSession) -> list[str]:
     url = "https://ngosang.github.io/trackerslist/trackers_best.txt"
     logger.info("Fetching latest trackers...")
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=15) as response:
-                response.raise_for_status()
-                text = await response.text()
-                trackers = [tracker.strip() for tracker in text.split('\n') if tracker.strip()]
-                logger.info(f"Successfully fetched {len(trackers)} trackers.")
-                return trackers
+        async with session.get(url, timeout=15) as response:
+            response.raise_for_status()
+            text = await response.text()
+            trackers = [tracker.strip() for tracker in text.split('\n') if tracker.strip()]
+            logger.info(f"Successfully fetched {len(trackers)} trackers.")
+            return trackers
+    except aiohttp.ClientError as e:
+        logger.error(f"Failed to fetch trackers due to a client error: {e}")
+        return []
+    except asyncio.TimeoutError:
+        logger.error("Failed to fetch trackers due to a timeout.")
+        return []
     except Exception as e:
-        logger.error(f"Failed to fetch trackers: {e}")
+        logger.error(f"An unexpected error occurred while fetching trackers: {e}", exc_info=True)
         return []
 
 def append_trackers_to_magnet(magnet: str, trackers: list[str]) -> str:
