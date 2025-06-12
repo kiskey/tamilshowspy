@@ -4,7 +4,7 @@ import aiohttp
 from aiorun import run
 from loguru import logger
 from aiohttp import web
-import nltk
+import nltk # Keep the import, it's still used by utils.py
 
 from src.config import settings
 from src.redis_client import redis_client, RedisClient
@@ -25,16 +25,7 @@ log_format = (
 logger.add(sys.stderr, level=settings.LOG_LEVEL.upper(), format=log_format)
 logger.add("logs/app.log", rotation="10 MB", level="DEBUG", enqueue=True, serialize=True) # JSON logs
 
-async def setup_nltk():
-    try:
-        nltk.data.find('stem/porter_stemmer.zip')
-    except LookupError:
-        logger.info("Downloading NLTK porter_stemmer...")
-        try:
-            nltk.download('porter_stemmer', quiet=True)
-            logger.info("NLTK porter_stemmer downloaded.")
-        except Exception as e:
-            logger.error(f"Failed to download NLTK data: {e}. Stemming will not work.")
+# The setup_nltk function is now REMOVED
 
 async def scheduler_task(session: aiohttp.ClientSession):
     """A simple async scheduler loop."""
@@ -76,7 +67,7 @@ async def start_background_tasks(app: web.Application):
         logger.warning("PURGE_ON_START is true. Flushing Redis.")
         await redis_client.flushdb()
 
-    await setup_nltk()
+    # The call to setup_nltk() is now REMOVED
 
     # Create worker pool, passing the session to each worker
     app['workers'] = [
