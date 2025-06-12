@@ -23,14 +23,11 @@ log_format = (
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 )
 logger.add(sys.stderr, level=settings.LOG_LEVEL.upper(), format=log_format)
-logger.add("logs/app.log", rotation="10 MB", level="DEBUG", enqueue=True, serialize=True) # JSON logs
-
-# The setup_nltk function is now REMOVED
+logger.add("logs/app.log", rotation="10 MB", level="DEBUG", enqueue=True, serialize=True)
 
 async def scheduler_task(session: aiohttp.ClientSession):
     """A simple async scheduler loop."""
     logger.info("Scheduler started.")
-    # Initial tasks on startup
     await update_trackers_task(session)
     await run_crawler(session, initial_run=True)
     
@@ -38,7 +35,6 @@ async def scheduler_task(session: aiohttp.ClientSession):
         logger.info(f"Scheduler sleeping for {settings.CRAWL_INTERVAL} seconds.")
         await asyncio.sleep(settings.CRAWL_INTERVAL)
         
-        # Scheduled tasks
         await update_trackers_task(session)
         await run_crawler(session)
         
@@ -58,16 +54,21 @@ async def start_background_tasks(app: web.Application):
     """aiohttp startup signal handler."""
     logger.info("Application starting up...")
     
+    # --- MODIFIED BLOCK ---
+    # Create a TCPConnector with SSL verification disabled. This is a robust way to
+    # prevent SSL/TLS handshake errors with sites behind Cloudflare or with
+    # non-standard certificate chains.
+    logger.warning("Creating aiohttp session with SSL verification disabled.")
+    connector = aiohttp.TCPConnector(limit_per_host=settings.MAX_CONCURRENCY, ssl=False)
+    # --- END MODIFIED BLOCK ---
+
     # Initialize shared aiohttp client session and store it in the app object
-    connector = aiohttp.TCPConnector(limit_per_host=settings.MAX_CONCURRENCY)
     http_session = aiohttp.ClientSession(connector=connector)
     app['http_session'] = http_session
 
     if settings.PURGE_ON_START:
         logger.warning("PURGE_ON_START is true. Flushing Redis.")
         await redis_client.flushdb()
-
-    # The call to setup_nltk() is now REMOVED
 
     # Create worker pool, passing the session to each worker
     app['workers'] = [
@@ -83,17 +84,14 @@ async def cleanup_background_tasks(app: web.Application):
     """aiohttp cleanup signal handler."""
     logger.info("Application shutting down...")
     
-    # Close shared HTTP session
     await app['http_session'].close()
 
-    # Cancel scheduler and workers
     app['scheduler'].cancel()
     for task in app['workers']:
         task.cancel()
     
     await asyncio.gather(app['scheduler'], *app['workers'], return_exceptions=True)
     
-    # Close Redis pool
     pool = RedisClient.get_pool()
     if pool:
         await pool.disconnect()
@@ -104,13 +102,11 @@ def main():
     app = web.Application()
     app.add_routes(routes)
     
-    # Register startup and cleanup handlers
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)
 
     logger.info(f"Starting web server on {settings.SERVER_HOST}:{settings.SERVER_PORT}")
     
-    # aiorun will handle the main loop and graceful shutdown
     run(web._run_app(app, host=settings.SERVER_HOST, port=settings.SERVER_PORT), stop_on_unhandled_errors=True)
 
 if __name__ == "__main__":
