@@ -2,8 +2,8 @@
 FROM python:3.11-slim
 
 # Set environment variables to prevent interactive prompts
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 # Create a non-root user
 RUN addgroup --system app && adduser --system --group app
