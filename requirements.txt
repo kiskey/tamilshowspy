@@ -1,5 +1,5 @@
 aiohttp==3.9.5
-aiorun==2024.4.0
+aiorun==2024.5.1
 beautifulsoup4==4.12.3
 guessit==3.9.0
 redis==5.0.4
