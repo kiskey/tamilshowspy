@@ -12,12 +12,14 @@ RUN addgroup --system app && adduser --system --group app
 WORKDIR /home/app
 
 # Install system dependencies
-# gcc and libpq-dev are often needed for psycopg2, which is a common dependency of other libraries
-# We install them here just in case, can be removed if not needed.
+# gcc is needed by some python packages for C extensions.
 RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Copy requirements file first to leverage Docker layer caching
 COPY requirements.txt .
+
+# Upgrade pip and install Python dependencies
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the application code into the container
