@@ -1,0 +1,63 @@
+# This workflow builds a Docker image and pushes it to the GitHub Container Registry (GHCR).
+# It's triggered on every push or pull request to the 'main' branch.
+# Pushing to the registry only happens on a direct push to 'main', not on pull requests.
+
+name: Docker Build and Push
+
+on:
+  # Run this workflow when a change is pushed to the 'main' branch.
+  push:
+    branches: [ "main" ]
+  
+  # Also run this workflow on pull requests to the 'main' branch for build validation.
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-push-image:
+    # Run on the latest version of Ubuntu
+    runs-on: ubuntu-latest
+
+    # Grant permissions for the GITHUB_TOKEN to read repository contents and write packages (images).
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Log in to the GitHub Container Registry (GHCR)
+      # The GITHUB_TOKEN is a special, temporary token automatically created by GitHub Actions.
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 3: Extract metadata for the Docker image
+      # This step automatically generates tags and labels for the image.
+      # For a push to 'main', it will create tags like 'latest' and the specific commit SHA.
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Define the image name for the GitHub Container Registry.
+          # The image will be named: ghcr.io/YOUR_USERNAME/stremio-tamilshowspy
+          images: ghcr.io/${{ github.repository_owner }}/stremio-tamilshowspy
+
+      # Step 4: Build the Docker image and push it to GHCR
+      # This step uses the Dockerfile from the root of the repository.
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          # The 'push' parameter is conditional. It will be 'true' only if the event is a 'push'
+          # to the main branch, and 'false' for pull requests. This prevents PRs from publishing images.
+          push: ${{ github.event_name != 'pull_request' }}
+          # Use the tags generated in the 'meta' step
+          tags: ${{ steps.meta.outputs.tags }}
+          # Use the labels generated in the 'meta' step
+          labels: ${{ steps.meta.outputs.labels }}
