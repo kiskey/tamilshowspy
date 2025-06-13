@@ -1,10 +1,10 @@
 import sys
 import asyncio
-import aiohttp
+import httpx
 from aiorun import run
 from loguru import logger
 from aiohttp import web
-import nltk # Keep the import, it's still used by utils.py
+import nltk
 
 from src.config import settings
 from src.redis_client import redis_client, RedisClient
@@ -12,10 +12,8 @@ from src.api import routes
 from src.crawler import run_crawler, worker
 from src.utils import fetch_trackers
 
-# --- Globals ---
 url_queue = asyncio.Queue()
 
-# --- Logger Setup ---
 logger.remove()
 log_format = (
     "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -25,22 +23,29 @@ log_format = (
 logger.add(sys.stderr, level=settings.LOG_LEVEL.upper(), format=log_format)
 logger.add("logs/app.log", rotation="10 MB", level="DEBUG", enqueue=True, serialize=True)
 
-async def scheduler_task(session: aiohttp.ClientSession):
-    """A simple async scheduler loop."""
+CHROME_CIPHERS = (
+    "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"
+    ":TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+    ":TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+    ":TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+    ":TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+    ":TLS_RSA_WITH_AES_128_GCM_SHA256:TLS_RSA_WITH_AES_256_GCM_SHA384"
+    ":TLS_RSA_WITH_AES_128_CBC_SHA:TLS_RSA_WITH_AES_256_CBC_SHA"
+)
+
+async def scheduler_task(client: httpx.AsyncClient):
     logger.info("Scheduler started.")
-    await update_trackers_task(session)
-    await run_crawler(session, initial_run=True)
-    
+    await update_trackers_task(client)
+    await run_crawler(client, initial_run=True)
     while True:
         logger.info(f"Scheduler sleeping for {settings.CRAWL_INTERVAL} seconds.")
         await asyncio.sleep(settings.CRAWL_INTERVAL)
-        
-        await update_trackers_task(session)
-        await run_crawler(session)
-        
-async def update_trackers_task(session: aiohttp.ClientSession):
+        await update_trackers_task(client)
+        await run_crawler(client)
+
+async def update_trackers_task(client: httpx.AsyncClient):
     logger.info("Running scheduled task: update trackers.")
-    trackers = await fetch_trackers(session)
+    trackers = await fetch_trackers(client)
     if trackers:
         pipe = redis_client.pipeline()
         pipe.delete("trackers:latest")
@@ -51,62 +56,57 @@ async def update_trackers_task(session: aiohttp.ClientSession):
         logger.warning("Tracker update failed, keeping old list.")
 
 async def start_background_tasks(app: web.Application):
-    """aiohttp startup signal handler."""
     logger.info("Application starting up...")
-    
-    # --- MODIFIED BLOCK ---
-    # Create a TCPConnector with SSL verification disabled. This is a robust way to
-    # prevent SSL/TLS handshake errors with sites behind Cloudflare or with
-    # non-standard certificate chains.
-    logger.warning("Creating aiohttp session with SSL verification disabled.")
-    connector = aiohttp.TCPConnector(limit_per_host=settings.MAX_CONCURRENCY, ssl=False)
-    # --- END MODIFIED BLOCK ---
 
-    # Initialize shared aiohttp client session and store it in the app object
-    http_session = aiohttp.ClientSession(connector=connector)
-    app['http_session'] = http_session
+    limits = httpx.Limits(max_connections=settings.MAX_CONCURRENCY, max_keepalive_connections=settings.MAX_CONCURRENCY)
+    context = httpx.create_default_ssl_context()
+    context.set_ciphers(CHROME_CIPHERS)
+    
+    # --- THE CRITICAL COOKIE FIX ---
+    # We pre-set the cookie that Cloudflare's JavaScript check expects to find.
+    # This is the most important part of the fix.
+    cookies = {"ips4_hasJS": "true"}
+    logger.info(f"Initializing httpx client with preset cookie: {cookies}")
+    # --- END OF FIX ---
+    
+    http_client = httpx.AsyncClient(
+        http2=True,
+        verify=context,
+        limits=limits,
+        follow_redirects=True,
+        cookies=cookies # <-- Set the cookies on the client
+    )
+    app['http_client'] = http_client
 
     if settings.PURGE_ON_START:
         logger.warning("PURGE_ON_START is true. Flushing Redis.")
         await redis_client.flushdb()
 
-    # Create worker pool, passing the session to each worker
     app['workers'] = [
-        asyncio.create_task(worker(f"worker-{i}", url_queue, app['http_session']))
+        asyncio.create_task(worker(f"worker-{i}", url_queue, app['http_client']))
         for i in range(settings.MAX_CONCURRENCY)
     ]
-    
-    # Start the scheduler, passing the session
-    app['scheduler'] = asyncio.create_task(scheduler_task(app['http_session']))
+    app['scheduler'] = asyncio.create_task(scheduler_task(app['http_client']))
     logger.info("Background tasks and workers started.")
 
 async def cleanup_background_tasks(app: web.Application):
-    """aiohttp cleanup signal handler."""
     logger.info("Application shutting down...")
-    
-    await app['http_session'].close()
-
+    await app['http_client'].aclose()
     app['scheduler'].cancel()
     for task in app['workers']:
         task.cancel()
-    
     await asyncio.gather(app['scheduler'], *app['workers'], return_exceptions=True)
-    
     pool = RedisClient.get_pool()
     if pool:
         await pool.disconnect()
     logger.info("Cleanup complete.")
 
 def main():
-    """Main entry point."""
     app = web.Application()
     app.add_routes(routes)
-    
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)
-
     logger.info(f"Starting web server on {settings.SERVER_HOST}:{settings.SERVER_PORT}")
-    
     run(web._run_app(app, host=settings.SERVER_HOST, port=settings.SERVER_PORT), stop_on_unhandled_errors=True)
 
 if __name__ == "__main__":
